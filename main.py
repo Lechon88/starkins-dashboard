@@ -1,4 +1,5 @@
 import os, sys, time, platform, getpass, subprocess
+import csv, ctypes, threading
 from collections import deque
 import psutil
 from version import APP_VERSION
@@ -38,6 +39,141 @@ class UpdateDownloadWorker(QThread):
             self.result.emit({"path": str(path)})
         except Exception as exc:
             self.result.emit({"error": str(exc)})
+
+
+class PresentMonWorker(QThread):
+    """Read per-frame CSV from PresentMon without blocking the Qt event loop."""
+    fps = pyqtSignal(int, object)
+    status = pyqtSignal(str)
+
+    def __init__(self, executable):
+        super().__init__()
+        self.executable = executable
+        self._stop = threading.Event()
+        self._process = None
+
+    def stop(self):
+        self._stop.set()
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+
+    def run(self):
+        if not self.executable or not os.path.isfile(self.executable):
+            self.status.emit("FPS-Quelle nicht verfügbar")
+            return
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            self._process = subprocess.Popen(
+                [self.executable, "--output_stdout", "--no_console_stats", "--no_track_gpu"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                encoding="utf-8-sig", errors="replace", bufsize=1, creationflags=flags)
+            self.status.emit("FPS-Messung bereit")
+            reader = csv.reader(self._process.stdout)
+            headers = None
+            samples = {}
+            last_emit = {}
+            for row in reader:
+                if self._stop.is_set():
+                    break
+                if not row:
+                    continue
+                if headers is None:
+                    if "ProcessID" not in row:
+                        continue
+                    headers = [x.strip() for x in row]
+                    continue
+                try:
+                    values = dict(zip(headers, row))
+                    pid = int(values.get("ProcessID", "0"))
+                    frame_ms = float(values.get("MsBetweenPresents") or values.get("MsBetweenDisplayChange") or 0)
+                    if pid <= 0 or frame_ms <= 0:
+                        continue
+                    series = samples.setdefault(pid, deque(maxlen=90))
+                    series.append(frame_ms)
+                    now = time.monotonic()
+                    if now - last_emit.get(pid, 0) >= 0.5:
+                        self.fps.emit(pid, int(round(1000 / (sum(series) / len(series)))))
+                        last_emit[pid] = now
+                except (ValueError, TypeError, ZeroDivisionError):
+                    continue
+            if not self._stop.is_set():
+                code = self._process.poll()
+                self.status.emit("FPS nicht verfügbar (Windows-Berechtigung oder Capture)" if code else "FPS-Messung beendet")
+        except Exception:
+            self.status.emit("FPS nicht verfügbar")
+        finally:
+            if self._process and self._process.poll() is None:
+                self._process.terminate()
+            if self._process and self._process.stdout:
+                self._process.stdout.close()
+
+
+def presentmon_path():
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "PresentMon.exe")
+
+
+def foreground_pid():
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        pid = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value or None
+    except Exception:
+        return None
+
+
+class GamingOverlay(QWidget):
+    """Compact always-on-top overlay; does not take keyboard focus from games."""
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
+                         Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setWindowTitle("Starkins Gaming Overlay")
+        self.resize(410, 78)
+        self._drag_offset = None
+        self.setStyleSheet("""
+            QWidget#overlay { background: rgba(12, 13, 18, 225); border: 1px solid #343643; border-radius: 14px; }
+            QLabel { background: transparent; color: #f2f2f4; font-family: 'Segoe UI'; }
+            QLabel#brand { color: #19d3a2; font-size: 10px; font-weight: 800; letter-spacing: 1px; }
+            QLabel#value { font-size: 17px; font-weight: 700; }
+            QLabel#caption { color: #a3a1ac; font-size: 10px; }
+            QLabel#fps { color: #19d3a2; font-size: 23px; font-weight: 800; }
+        """)
+        self.setObjectName("overlay")
+        root = QVBoxLayout(self); root.setContentsMargins(14, 8, 14, 8); root.setSpacing(3)
+        brand = QLabel("STARKINS  ·  GAMING OVERLAY"); brand.setObjectName("brand"); root.addWidget(brand)
+        row = QHBoxLayout(); row.setSpacing(16)
+        self.labels = {}
+        for key, caption in (("fps", "FPS"), ("cpu", "CPU"), ("gpu", "GPU"), ("ram", "RAM")):
+            box = QVBoxLayout(); box.setSpacing(0)
+            val = QLabel("–"); val.setObjectName("fps" if key == "fps" else "value")
+            cap = QLabel(caption); cap.setObjectName("caption")
+            box.addWidget(val); box.addWidget(cap); row.addLayout(box)
+            self.labels[key] = val
+        row.addStretch(1)
+        hint = QLabel("Ziehen zum Verschieben"); hint.setObjectName("caption")
+        row.addWidget(hint, 0, Qt.AlignmentFlag.AlignVCenter)
+        root.addLayout(row)
+
+    def update_metrics(self, metrics, fps):
+        self.labels["fps"].setText(f"{fps}" if fps else "–")
+        self.labels["cpu"].setText("–" if metrics.get("cpu") is None else f"{metrics['cpu']:.0f}%")
+        self.labels["gpu"].setText("–" if metrics.get("gv") is None else f"{metrics['gv']:.0f}%")
+        ram = metrics.get("vm")
+        self.labels["ram"].setText("–" if ram is None else f"{ram.percent:.0f}%")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
 
 
 GREEN, CYAN, AMBER, RED, GREY, PURPLE = "#19d3a2", "#5ac8fa", "#f5a524", "#e5484d", "#6b6872", "#b784f5"
@@ -320,6 +456,10 @@ class Dashboard(QWidget):
         logo = QLabel("STARKINS"); logo.setObjectName("logo"); sl.addWidget(logo); sl.addSpacing(18)
         nav = Nav("⌂   Home"); nav.on(True); nav.clicked.connect(lambda: self.go("home")); sl.addWidget(nav)
         sl.addStretch()
+        self.overlay_button = QPushButton("Gaming Overlay: Aus")
+        self.overlay_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay_button.clicked.connect(self.toggle_overlay)
+        sl.addWidget(self.overlay_button)
         self.update_button = QPushButton("Updates suchen")
         self.update_button.setObjectName("updateButton")
         self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -331,6 +471,13 @@ class Dashboard(QWidget):
         root.addWidget(side); root.addWidget(self.stack, 1)
 
         self.cur, self.m = "home", {}
+        self.overlay = GamingOverlay()
+        self.overlay_visible = False
+        self.fps_by_pid = {}
+        self.presentmon = PresentMonWorker(presentmon_path())
+        self.presentmon.fps.connect(self.on_fps_update)
+        self.presentmon.status.connect(self.overlay_button.setToolTip)
+        self.presentmon.start()
         self.last, self.last_t = psutil.net_io_counters(), time.time()
         self.nic_prev, self.dio_prev = psutil.net_io_counters(pernic=True), psutil.disk_io_counters()
         self.io_prev, self.pt, self.agg = {}, time.time(), {}
@@ -393,6 +540,32 @@ class Dashboard(QWidget):
         else:
             self.update_button.setText("Erneut versuchen")
             self.update_button.setEnabled(True)
+
+    def toggle_overlay(self):
+        self.overlay_visible = not self.overlay_visible
+        if self.overlay_visible:
+            self.overlay.update_metrics(self.m, self.current_fps())
+            self.overlay.show()
+            self.overlay_button.setText("Gaming Overlay: An")
+        else:
+            self.overlay.hide()
+            self.overlay_button.setText("Gaming Overlay: Aus")
+
+    def on_fps_update(self, pid, value):
+        self.fps_by_pid[pid] = (value, time.monotonic())
+
+    def current_fps(self):
+        sample = self.fps_by_pid.get(foreground_pid())
+        if not sample or time.monotonic() - sample[1] > 2.5:
+            return None
+        return sample[0]
+
+    def closeEvent(self, event):
+        self.overlay.close()
+        if self.presentmon.isRunning():
+            self.presentmon.stop()
+            self.presentmon.wait(1500)
+        super().closeEvent(event)
 
     def go(self, k):
         self.cur = k; self.stack.setCurrentWidget(self.pages[k])
@@ -487,6 +660,8 @@ class Dashboard(QWidget):
 
         self.pg["cpu"].graph.push(m["cpu"]); self.pg["gpu"].graph.push(gv, vpct)
         self.pg["ram"].graph.push(vm.percent); self.pg["disk"].graph.push(rd, wr); self.pg["net"].graph.push(down, up)
+        if self.overlay_visible:
+            self.overlay.update_metrics(m, self.current_fps())
         if self.cur in ("cpu", "ram", "disk"): self.sample_procs()
         self.fill()
 
@@ -522,6 +697,7 @@ class Dashboard(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv); win = Dashboard(); win.show(); sys.exit(app.exec())
+
 
 
 

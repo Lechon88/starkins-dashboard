@@ -8,6 +8,9 @@ on:
       - "updater.py"
       - "version.py"
       - "requirements.txt"
+      - "build.bat"
+      - "THIRD-PARTY-NOTICES.txt"
+      - "README.md"
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
@@ -31,6 +34,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller==6.22.3
 
+      - name: Download PresentMon FPS helper
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build_tools | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/GameTechDev/PresentMon/releases/download/v2.6.0/PresentMon-2.6.0-x64.exe" -OutFile "build_tools/PresentMon.exe"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/GameTechDev/PresentMon/v2.6.0/LICENSE.txt" -OutFile "build_tools/PresentMon-LICENSE.txt"
+
       - name: Set release version
         shell: pwsh
         run: |
@@ -41,7 +51,10 @@ jobs:
       - name: Build Windows executable
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --windowed
-          --name StarkinsDashboard --distpath dist --workpath build --specpath build main.py
+          --name StarkinsDashboard --distpath dist --workpath build --specpath .
+          --add-binary "build_tools/PresentMon.exe;."
+          --add-data "THIRD-PARTY-NOTICES.txt;."
+          main.py
 
       - name: Create release and upload executable
         shell: pwsh
@@ -57,5 +70,6 @@ jobs:
           } else {
             gh release create $tag dist\StarkinsDashboard.exe dist\StarkinsDashboard.exe.sha256 --title "Starkins Dashboard $tag" --notes "Automatisch aus dem main-Branch gebaut."
           }
+
 
 

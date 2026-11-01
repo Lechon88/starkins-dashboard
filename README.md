@@ -23,4 +23,11 @@ Run `build.bat` from this folder. Local builds use the version in `version.py`. 
 
 NVIDIA telemetry uses `nvidia-ml-py` when supported. The dashboard remains usable if NVIDIA monitoring or sensor data is unavailable.
 
+## Gaming overlay
+
+Turn on **Gaming Overlay** in the left sidebar before opening a game. The small movable overlay shows current CPU, GPU, and RAM use plus FPS for the active foreground app. FPS is captured by PresentMon, bundled into the Windows executable; if Windows does not allow capture, the other metrics remain available and FPS shows as unavailable. The overlay is intended for windowed or borderless games. Exclusive fullscreen games may draw over ordinary desktop overlays.
+
+PresentMon is distributed under its MIT license. The license is included in the app as `THIRD-PARTY-NOTICES.txt`.
+
+
 
