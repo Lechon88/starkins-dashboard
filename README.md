@@ -25,9 +25,10 @@ NVIDIA telemetry uses `nvidia-ml-py` when supported. The dashboard remains usabl
 
 ## Gaming overlay
 
-Turn on **Gaming Overlay** in the left sidebar before opening a game. The small movable overlay shows current CPU, GPU, and RAM use plus FPS for the active foreground app. FPS is captured by PresentMon, bundled into the Windows executable; if Windows does not allow capture, the other metrics remain available and FPS shows as unavailable. The overlay is intended for windowed or borderless games. Exclusive fullscreen games may draw over ordinary desktop overlays.
+Turn on **Gaming Overlay** in the left sidebar before opening a game. The dashboard window has a fixed size. The small movable overlay shows current CPU, GPU, and RAM use plus FPS for the active foreground app. Drag it anywhere to move it; its position is remembered. Closing the dashboard while the overlay is on hides the main window but keeps the overlay running. Use the × button on the overlay to restore the dashboard. FPS is captured by PresentMon, bundled into the Windows executable; if Windows does not allow capture, the other metrics remain available and FPS shows as unavailable. The overlay is intended for windowed or borderless games. Exclusive fullscreen games may draw over ordinary desktop overlays.
 
 PresentMon is distributed under its MIT license. The license is included in the app as `THIRD-PARTY-NOTICES.txt`.
+
 
 
 

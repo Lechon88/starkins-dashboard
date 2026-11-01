@@ -4,7 +4,7 @@ from collections import deque
 import psutil
 from version import APP_VERSION
 from updater import check_latest_release, download_latest_release, start_updated_app
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QThread, QSettings
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath, QBrush
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
                                QFrame, QPushButton, QStackedWidget)
@@ -125,14 +125,17 @@ def foreground_pid():
 
 class GamingOverlay(QWidget):
     """Compact always-on-top overlay; does not take keyboard focus from games."""
+    close_requested = pyqtSignal()
+
     def __init__(self):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
                          Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowTitle("Starkins Gaming Overlay")
-        self.resize(410, 78)
+        self.setFixedSize(430, 78)
         self._drag_offset = None
+        self.settings = QSettings("Starkins", "Dashboard")
         self.setStyleSheet("""
             QWidget#overlay { background: rgba(12, 13, 18, 225); border: 1px solid #343643; border-radius: 14px; }
             QLabel { background: transparent; color: #f2f2f4; font-family: 'Segoe UI'; }
@@ -140,22 +143,40 @@ class GamingOverlay(QWidget):
             QLabel#value { font-size: 17px; font-weight: 700; }
             QLabel#caption { color: #a3a1ac; font-size: 10px; }
             QLabel#fps { color: #19d3a2; font-size: 23px; font-weight: 800; }
+            QPushButton#overlayClose { background: transparent; border: 0; color: #a3a1ac; padding: 0; font-size: 17px; }
+            QPushButton#overlayClose:hover { color: #ffffff; background: #30313a; }
         """)
         self.setObjectName("overlay")
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         root = QVBoxLayout(self); root.setContentsMargins(14, 8, 14, 8); root.setSpacing(3)
-        brand = QLabel("STARKINS  ·  GAMING OVERLAY"); brand.setObjectName("brand"); root.addWidget(brand)
+        head = QHBoxLayout(); head.setSpacing(8)
+        brand = QLabel("STARKINS  ·  GAMING OVERLAY"); brand.setObjectName("brand")
+        brand.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        head.addWidget(brand); head.addStretch(1)
+        close_button = QPushButton("×"); close_button.setObjectName("overlayClose")
+        close_button.setFixedSize(24, 22); close_button.setToolTip("Overlay schließen und Dashboard öffnen")
+        close_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close_button.clicked.connect(self.close_requested.emit)
+        head.addWidget(close_button)
+        root.addLayout(head)
         row = QHBoxLayout(); row.setSpacing(16)
         self.labels = {}
         for key, caption in (("fps", "FPS"), ("cpu", "CPU"), ("gpu", "GPU"), ("ram", "RAM")):
             box = QVBoxLayout(); box.setSpacing(0)
             val = QLabel("–"); val.setObjectName("fps" if key == "fps" else "value")
             cap = QLabel(caption); cap.setObjectName("caption")
+            val.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            cap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             box.addWidget(val); box.addWidget(cap); row.addLayout(box)
             self.labels[key] = val
         row.addStretch(1)
-        hint = QLabel("Ziehen zum Verschieben"); hint.setObjectName("caption")
-        row.addWidget(hint, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(row)
+        try:
+            x, y = self.settings.value("overlay/x"), self.settings.value("overlay/y")
+            if x is not None and y is not None:
+                self.move(int(x), int(y))
+        except (TypeError, ValueError):
+            pass
 
     def update_metrics(self, metrics, fps):
         self.labels["fps"].setText(f"{fps}" if fps else "–")
@@ -167,6 +188,7 @@ class GamingOverlay(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
         if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -174,6 +196,9 @@ class GamingOverlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         self._drag_offset = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.settings.setValue("overlay/x", self.x())
+        self.settings.setValue("overlay/y", self.y())
 
 
 GREEN, CYAN, AMBER, RED, GREY, PURPLE = "#19d3a2", "#5ac8fa", "#f5a524", "#e5484d", "#6b6872", "#b784f5"
@@ -398,7 +423,7 @@ class HwCard(Card):
 
 class Dashboard(QWidget):
     def __init__(self):
-        super().__init__(); self.setWindowTitle("Starkins Dashboard"); self.resize(1360, 820)
+        super().__init__(); self.setWindowTitle("Starkins Dashboard"); self.setFixedSize(1360, 820)
         self.setStyleSheet(QSS)
         self.drive = os.environ.get("SystemDrive", "C:") + "\\"
         total_ram = psutil.virtual_memory().total / 2**30
@@ -472,6 +497,7 @@ class Dashboard(QWidget):
 
         self.cur, self.m = "home", {}
         self.overlay = GamingOverlay()
+        self.overlay.close_requested.connect(self.close_overlay_and_restore_dashboard)
         self.overlay_visible = False
         self.fps_by_pid = {}
         self.presentmon = PresentMonWorker(presentmon_path())
@@ -554,6 +580,15 @@ class Dashboard(QWidget):
     def on_fps_update(self, pid, value):
         self.fps_by_pid[pid] = (value, time.monotonic())
 
+    def close_overlay_and_restore_dashboard(self):
+        self.overlay.hide()
+        self.overlay_visible = False
+        self.overlay_button.setText("Gaming Overlay: Aus")
+        if not self.isVisible():
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
     def current_fps(self):
         sample = self.fps_by_pid.get(foreground_pid())
         if not sample or time.monotonic() - sample[1] > 2.5:
@@ -561,6 +596,10 @@ class Dashboard(QWidget):
         return sample[0]
 
     def closeEvent(self, event):
+        if self.overlay_visible:
+            event.ignore()
+            self.hide()
+            return
         self.overlay.close()
         if self.presentmon.isRunning():
             self.presentmon.stop()
@@ -697,6 +736,7 @@ class Dashboard(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv); win = Dashboard(); win.show(); sys.exit(app.exec())
+
 
 
 
