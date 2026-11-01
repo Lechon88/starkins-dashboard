@@ -152,6 +152,34 @@ def _download_release(release: dict[str, Any], version_text: str, asset: dict[st
         raise
 
 
+def check_latest_release() -> dict[str, Any] | None:
+    """Return the newer stable release metadata, or None if this version is current."""
+    current = _version_tuple(APP_VERSION)
+    if current is None:
+        return None
+    release = _release_info()
+    latest = _version_tuple(str(release.get("tag_name", "")))
+    return release if latest is not None and latest > current else None
+
+
+def download_latest_release(release: dict[str, Any]) -> Path:
+    """Download and verify the release executable without starting it."""
+    tag = str(release.get("tag_name", ""))
+    latest = _version_tuple(tag)
+    current = _version_tuple(APP_VERSION)
+    if latest is None or current is None or latest <= current:
+        raise ValueError("This release is not newer than the installed app")
+    asset = next((item for item in release.get("assets", []) if item.get("name") == ASSET_NAME), None)
+    if not asset or not asset.get("browser_download_url"):
+        raise ValueError("Release executable was not found")
+    return _download_release(release, tag, asset)
+
+
+def start_updated_app(executable: str | Path) -> bool:
+    """Start a downloaded executable after the user confirms the update."""
+    return _launch(Path(executable))
+
+
 def launch_updated_copy() -> bool:
     """Launch a newer cached/downloaded executable; return whether to exit this process."""
     if not getattr(sys, "frozen", False):
@@ -172,4 +200,5 @@ def launch_updated_copy() -> bool:
         return _launch(executable)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, urllib.error.URLError):
         return bool(cached and cached[0] > current and _launch(cached[1]))
+
 

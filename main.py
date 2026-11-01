@@ -2,8 +2,8 @@ import os, sys, time, platform, getpass, subprocess
 from collections import deque
 import psutil
 from version import APP_VERSION
-from updater import launch_updated_copy
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal
+from updater import check_latest_release, download_latest_release, start_updated_app
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal, QThread
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath, QBrush
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
                                QFrame, QPushButton, QStackedWidget)
@@ -14,6 +14,31 @@ try:
     GPU = pynvml.nvmlDeviceGetHandleByIndex(0)
 except Exception:
     GPU = None
+
+class UpdateCheckWorker(QThread):
+    result = pyqtSignal(object)
+
+    def run(self):
+        try:
+            self.result.emit({"release": check_latest_release()})
+        except Exception as exc:
+            self.result.emit({"error": str(exc)})
+
+
+class UpdateDownloadWorker(QThread):
+    result = pyqtSignal(object)
+
+    def __init__(self, release):
+        super().__init__()
+        self.release = release
+
+    def run(self):
+        try:
+            path = download_latest_release(self.release)
+            self.result.emit({"path": str(path)})
+        except Exception as exc:
+            self.result.emit({"error": str(exc)})
+
 
 GREEN, CYAN, AMBER, RED, GREY, PURPLE = "#19d3a2", "#5ac8fa", "#f5a524", "#e5484d", "#6b6872", "#b784f5"
 QSS = """
@@ -26,6 +51,9 @@ QLabel#h1{font-size:34px;font-weight:700;} QLabel#h2{font-size:20px;font-weight:
 QLabel#muted{color:#8a8790;font-size:12px;} QLabel#logo{font-size:22px;font-weight:800;letter-spacing:2px;}
 QPushButton{background:#1a191d;border:1px solid #2a2830;border-radius:10px;padding:8px 14px;color:#f2f2f4;}
 QPushButton:hover{background:#232127;border:1px solid #5ac8fa;}
+QPushButton#updateButton{background:#12251f;border:1px solid #19d3a2;color:#fff;padding:8px 5px;}
+QPushButton#updateButton:hover{background:#173d31;}
+QPushButton#updateButton:disabled{color:#8a8790;}
 """
 NAV_ON = "QLabel{background:#12251f;border:1px solid #19d3a2;border-radius:10px;padding:9px 12px;color:#fff;}"
 NAV_OFF = ("QLabel{background:transparent;border:1px solid transparent;border-radius:10px;padding:9px 12px;color:#9a97a1;}"
@@ -291,7 +319,14 @@ class Dashboard(QWidget):
         sl = QVBoxLayout(side); sl.setContentsMargins(16, 20, 16, 16); sl.setSpacing(4)
         logo = QLabel("STARKINS"); logo.setObjectName("logo"); sl.addWidget(logo); sl.addSpacing(18)
         nav = Nav("⌂   Home"); nav.on(True); nav.clicked.connect(lambda: self.go("home")); sl.addWidget(nav)
-        sl.addStretch(); ver = QLabel("v" + ".".join(APP_VERSION.split(".")[:2])); ver.setObjectName("muted"); sl.addWidget(ver)
+        sl.addStretch()
+        self.update_button = QPushButton("Updates suchen")
+        self.update_button.setObjectName("updateButton")
+        self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_button.setEnabled(False)
+        self.update_button.clicked.connect(self.on_update_button)
+        sl.addWidget(self.update_button)
+        ver = QLabel("v" + ".".join(APP_VERSION.split(".")[:2])); ver.setObjectName("muted"); sl.addWidget(ver)
         root = QHBoxLayout(self); root.setContentsMargins(18, 18, 18, 18); root.setSpacing(18)
         root.addWidget(side); root.addWidget(self.stack, 1)
 
@@ -302,6 +337,62 @@ class Dashboard(QWidget):
         psutil.cpu_percent(); psutil.cpu_percent(percpu=True)
         self.go("home")
         self.timer = QTimer(self); self.timer.timeout.connect(self.tick); self.timer.start(1000); self.tick()
+        self._update_worker = None
+        self.latest_release = None
+        QTimer.singleShot(900, self.check_for_updates)
+
+    def _start_update_worker(self, worker, handler):
+        self._update_worker = worker
+        worker.result.connect(handler)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def check_for_updates(self):
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Suche Updates …")
+        self.latest_release = None
+        self._start_update_worker(UpdateCheckWorker(self), self.on_update_check_finished)
+
+    def on_update_check_finished(self, result):
+        error = result.get("error")
+        release = result.get("release")
+        if error:
+            self.update_button.setText("Erneut suchen")
+            self.update_button.setToolTip("Updateprüfung fehlgeschlagen: " + error)
+            self.latest_release = None
+        elif release:
+            self.latest_release = release
+            tag = str(release.get("tag_name", "")).lstrip("v")
+            self.update_button.setText(f"Update {tag}")
+            self.update_button.setToolTip("Klicken, um die geprüfte Version herunterzuladen und zu starten.")
+        else:
+            self.update_button.setText("Updates suchen")
+            self.update_button.setToolTip("Deine App ist aktuell. Klicken, um erneut zu suchen.")
+            self.latest_release = None
+        self.update_button.setEnabled(True)
+
+    def on_update_button(self):
+        if not self.latest_release:
+            self.check_for_updates()
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Lade Update …")
+        worker = UpdateDownloadWorker(self.latest_release)
+        self._start_update_worker(worker, self.on_update_download_finished)
+
+    def on_update_download_finished(self, result):
+        error = result.get("error")
+        if error:
+            self.update_button.setText("Erneut suchen")
+            self.update_button.setToolTip(error)
+            self.update_button.setEnabled(True)
+            self.latest_release = None
+            return
+        if start_updated_app(result["path"]):
+            self.close()
+        else:
+            self.update_button.setText("Erneut versuchen")
+            self.update_button.setEnabled(True)
 
     def go(self, k):
         self.cur = k; self.stack.setCurrentWidget(self.pages[k])
@@ -430,8 +521,7 @@ class Dashboard(QWidget):
             d.procs.set([(n[:24], (a + b) / mx, f"↓ {speed(a)}  ↑ {speed(b)}") for n, a, b in nics])
 
 if __name__ == "__main__":
-    if launch_updated_copy():
-        raise SystemExit(0)
     app = QApplication(sys.argv); win = Dashboard(); win.show(); sys.exit(app.exec())
+
 
 
