@@ -5,7 +5,7 @@ Windows dashboard built with PyQt6. A GitHub Actions workflow builds and publish
 ## Automatic update flow
 
 1. Push an application change to `main`.
-2. GitHub Actions builds `StarkinsDashboard.exe`, assigns an increasing `1.2.<run>` version, and publishes a GitHub Release containing the executable and checksum.
+2. GitHub Actions builds `StarkinsDashboard.exe`, assigns an increasing `1.3.<run>` version, and publishes a GitHub Release containing the executable and checksum.
 3. The updater-enabled app downloads and verifies the release at next startup. The first updater-enabled executable must be installed once; subsequent releases update automatically.
 
 ## Run from source
@@ -22,4 +22,5 @@ python main.py
 Run `build.bat` from this folder. Local builds use the version in `version.py`. For automatic releases, push changes to the `main` branch instead; GitHub Actions builds and publishes the downloadable app.
 
 NVIDIA telemetry uses `nvidia-ml-py` when supported. The dashboard remains usable if NVIDIA monitoring or sensor data is unavailable.
+
 

@@ -291,7 +291,7 @@ class Dashboard(QWidget):
         sl = QVBoxLayout(side); sl.setContentsMargins(16, 20, 16, 16); sl.setSpacing(4)
         logo = QLabel("STARKINS"); logo.setObjectName("logo"); sl.addWidget(logo); sl.addSpacing(18)
         nav = Nav("⌂   Home"); nav.on(True); nav.clicked.connect(lambda: self.go("home")); sl.addWidget(nav)
-        sl.addStretch(); ver = QLabel(f"v{APP_VERSION}"); ver.setObjectName("muted"); sl.addWidget(ver)
+        sl.addStretch(); ver = QLabel("v" + ".".join(APP_VERSION.split(".")[:2])); ver.setObjectName("muted"); sl.addWidget(ver)
         root = QHBoxLayout(self); root.setContentsMargins(18, 18, 18, 18); root.setSpacing(18)
         root.addWidget(side); root.addWidget(self.stack, 1)
 
@@ -433,4 +433,5 @@ if __name__ == "__main__":
     if launch_updated_copy():
         raise SystemExit(0)
     app = QApplication(sys.argv); win = Dashboard(); win.show(); sys.exit(app.exec())
+
 
